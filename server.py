@@ -198,6 +198,16 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             gap: 5px;
         }}
         .toolbar span {{ color: #666; font-size: 12px; margin-right: 5px; }}
+        .search-input {{
+            background: #16213e;
+            border: 1px solid #0f3460;
+            color: #eee;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            width: 80px;
+        }}
+        .search-input:focus {{ outline: none; border-color: #00d9ff; width: 120px; }}
         .sort-group {{
             display: inline-flex;
             gap: 2px;
@@ -314,6 +324,7 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
         
         <!-- 工具栏 -->
         <div class="toolbar">
+            <input type="text" id="search" class="search-input" oninput="filterFiles()" placeholder>
             <span>排序:</span>
             {sort_links}
         </div>
@@ -526,6 +537,15 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             readOnly: true,
             viewportMargin: Infinity
         }});
+        
+        // 文件搜索过滤
+        function filterFiles() {{
+            const q = document.getElementById('search').value.toLowerCase();
+            document.querySelectorAll('.file-item').forEach(item => {{
+                const name = item.querySelector('.file-name').textContent.toLowerCase();
+                item.style.display = name.includes(q) ? '' : 'none';
+            }});
+        }}
     </script>
 </body>
 </html>'''
