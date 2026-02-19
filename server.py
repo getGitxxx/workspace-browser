@@ -37,8 +37,11 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
         # 目录浏览
         if os.path.isdir(path):
             if not self.path.endswith('/'):
+                # 所有带查询参数的请求都直接返回目录，避免重定向问题
+                if '?' in self.path:
+                    return self.list_directory(path)
                 self.send_response(301)
-                self.send_header('Location', self.path + '/')
+                self.send_header('Location', self.path.rstrip('/') + '/')
                 self.end_headers()
                 return
             return self.list_directory(path)
@@ -47,25 +50,13 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
     
     def list_directory(self, path):
         try:
-            # 解析排序参数
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            sort = params.get('sort', ['name'])[0]
-            order = params.get('order', ['asc'])[0]
-            
+            # 前端JS排序，后端默认按名称排序
             entries = list(Path(path).iterdir())
             # 过滤隐藏文件
             entries = [e for e in entries if not e.name.startswith('.')]
             
-            # 混合排序（目录在前或统一混合）
-            reverse = order == 'desc'
-            
-            if sort == 'time':
-                entries.sort(key=lambda x: x.stat().st_mtime, reverse=reverse)
-            elif sort == 'type':
-                entries.sort(key=lambda x: (not x.is_dir(), x.suffix.lower(), x.name.lower()))
-            else:  # name
-                entries.sort(key=lambda x: (not x.is_dir(), x.name.lower()), reverse=reverse)
+            # 默认按名称排序（目录在前）
+            entries.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
             
             # 相对路径
             rel_path = os.path.relpath(path, WORKSPACE)
@@ -127,20 +118,14 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 </li>
 '''
             
-            # 排序链接 - 更友好的展示
-            sort_options = [('name', '名称'), ('time', '时间'), ('type', '类型')]
-            sort_links = ''
-            for s, label in sort_options:
-                active = 'active' if s == sort else ''
-                asc_url = f'{breadcrumb}?sort={s}&order=asc'
-                desc_url = f'{breadcrumb}?sort={s}&order=desc'
-                asc_active = 'active' if sort == s and order == 'asc' else ''
-                desc_active = 'active' if sort == s and order == 'desc' else ''
-                sort_links += f'''
-                <div class="sort-group {active}">
-                    <a href="{asc_url}" class="sort-btn {asc_active}" title="{label} ↑">↑</a>
-                    <a href="{desc_url}" class="sort-btn {desc_active}" title="{label} ↓">↓</a>
-                </div>
+            # 排序链接 - 前端JS排序
+            sort_links = '''
+            <div class="sort-options">
+                <span class="sort-label">排序:</span>
+                <button class="sort-btn active" data-field="name">名称</button>
+                <button class="sort-btn" data-field="time">时间</button>
+                <button class="sort-btn" data-field="type">类型</button>
+            </div>
 '''
             
             html = f'''<!DOCTYPE html>
@@ -208,22 +193,27 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             width: 80px;
         }}
         .search-input:focus {{ outline: none; border-color: #00d9ff; width: 120px; }}
-        .sort-group {{
-            display: inline-flex;
-            gap: 2px;
-            margin-right: 10px;
+        .sort-options {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .sort-label {{
+            color: #666;
+            font-size: 12px;
+            margin-right: 5px;
         }}
         .sort-btn {{
-            color: #555;
-            text-decoration: none;
-            font-size: 11px;
-            padding: 3px 6px;
-            border-radius: 3px;
-            background: #16213e;
+            color: #888;
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
         }}
-        .sort-btn:hover {{ color: #aaa; }}
-        .sort-group.active .sort-btn {{ color: #00d9ff; }}
-        .sort-btn.active {{ background: #0f3460; color: #00d9ff; }}
+        .sort-btn:hover {{ color: #eee; background: #1f3460; }}
+        .sort-btn.active {{ color: #00d9ff; background: #0f3460; }}
         
         /* 主内容 */
         .content {{
@@ -433,6 +423,69 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             document.querySelector('.file-list').style.width = '100%';
         }}
         
+        // 搜索过滤功能
+        function filterFiles() {{
+            const q = document.getElementById('search').value.toLowerCase();
+            document.querySelectorAll('.file-item').forEach(item => {{
+                const name = item.querySelector('.file-name').textContent.toLowerCase();
+                item.style.display = name.includes(q) ? '' : 'none';
+            }});
+        }}
+        
+        // 排序功能
+        let currentSort = {{ field: 'name', asc: true }};
+        
+        document.querySelectorAll('.sort-btn').forEach(btn => {{
+            btn.addEventListener('click', () => {{
+                const field = btn.dataset.field;
+                if (currentSort.field === field) {{
+                    currentSort.asc = !currentSort.asc;
+                }} else {{
+                    currentSort.field = field;
+                    currentSort.asc = true;
+                }}
+                
+                const list = document.querySelector('.file-list');
+                const items = Array.from(list.querySelectorAll('.file-item'));
+                
+                items.sort((a, b) => {{
+                    const aIsDir = a.querySelector('.dir-icon') !== null;
+                    const bIsDir = b.querySelector('.dir-icon') !== null;
+                    
+                    if (aIsDir && !bIsDir) return -1;
+                    if (!aIsDir && bIsDir) return 1;
+                    
+                    let aVal, bVal;
+                    if (field === 'name') {{
+                        aVal = a.querySelector('.file-name').textContent.toLowerCase();
+                        bVal = b.querySelector('.file-name').textContent.toLowerCase();
+                    }} else if (field === 'time') {{
+                        aVal = a.querySelector('.file-modified').textContent;
+                        bVal = b.querySelector('.file-modified').textContent;
+                    }} else if (field === 'type') {{
+                        aVal = a.querySelector('.file-type').textContent;
+                        bVal = b.querySelector('.file-type').textContent;
+                    }}
+                    
+                    if (currentSort.asc) {{
+                        return aVal.localeCompare(bVal);
+                    }} else {{
+                        return bVal.localeCompare(aVal);
+                    }}
+                }});
+                
+                items.forEach(item => list.appendChild(item));
+                
+                // 更新按钮状态
+                document.querySelectorAll('.sort-btn').forEach(b => {{
+                    b.classList.remove('active');
+                    const fieldName = b.dataset.field === 'name' ? '名称' : b.dataset.field === 'time' ? '时间' : '类型';
+                    b.textContent = fieldName + (b === btn ? (currentSort.asc ? '↑' : '↓') : '');
+                }});
+                btn.classList.add('active');
+            }});
+        }});
+        
         // 分隔条拖动
         const resizer = document.getElementById('resizer');
         const fileList = document.querySelector('.file-list');
@@ -546,6 +599,60 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 item.style.display = name.includes(q) ? '' : 'none';
             }});
         }}
+        
+        // 本地排序功能
+        let currentSort = {{ field: 'name', asc: true }};
+        
+        document.querySelectorAll('.sort-btn').forEach(btn => {{
+            btn.addEventListener('click', () => {{
+                const field = btn.dataset.field;
+                if (currentSort.field === field) {{
+                    currentSort.asc = !currentSort.asc;
+                }} else {{
+                    currentSort.field = field;
+                    currentSort.asc = true;
+                }}
+                
+                const list = document.querySelector('.file-list');
+                const items = Array.from(list.querySelectorAll('.file-item'));
+                
+                items.sort((a, b) => {{
+                    const aIsDir = a.querySelector('.dir-icon') !== null;
+                    const bIsDir = b.querySelector('.dir-icon') !== null;
+                    
+                    if (aIsDir && !bIsDir) return -1;
+                    if (!aIsDir && bIsDir) return 1;
+                    
+                    let aVal, bVal;
+                    if (field === 'name') {{
+                        aVal = a.querySelector('.file-name').textContent.toLowerCase();
+                        bVal = b.querySelector('.file-name').textContent.toLowerCase();
+                    }} else if (field === 'time') {{
+                        aVal = a.querySelector('.file-modified').textContent;
+                        bVal = b.querySelector('.file-modified').textContent;
+                    }} else if (field === 'type') {{
+                        aVal = a.querySelector('.file-type').textContent;
+                        bVal = b.querySelector('.file-type').textContent;
+                    }}
+                    
+                    if (currentSort.asc) {{
+                        return aVal.localeCompare(bVal);
+                    }} else {{
+                        return bVal.localeCompare(aVal);
+                    }}
+                }});
+                
+                items.forEach(item => list.appendChild(item));
+                
+                // 更新按钮状态
+                document.querySelectorAll('.sort-btn').forEach(b => {{
+                    b.classList.remove('active');
+                    b.textContent = b.dataset.field === 'name' ? '名称' : b.dataset.field === 'time' ? '时间' : '类型';
+                }});
+                btn.classList.add('active');
+                btn.textContent = btn.textContent + (currentSort.asc ? '↑' : '↓');
+            }});
+        }});
     </script>
 </body>
 </html>'''
