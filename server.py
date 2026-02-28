@@ -30,9 +30,9 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = self.translate_path(self.path)
         
-        # 文件预览
+        # 文件请求直接返回原始内容，前端侧边栏负责渲染预览
         if os.path.isfile(path):
-            return self.preview_file(path)
+            return super().do_GET()
         
         # 目录浏览
         if os.path.isdir(path):
@@ -85,10 +85,11 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 rel_parent = os.path.relpath(parent, WORKSPACE)
                 parent_url = '/' + rel_parent.replace(os.sep, '/') + '/' if rel_parent != '.' else '/'
                 files_html += f'''
-                <li class="file-item" data-url="{parent_url}">
+                <li class="file-item parent-item" data-parent-url="{parent_url}">
                     <span class="file-icon dir-icon">📂</span>
-                    <span class="file-name"><a href="{parent_url}">..</a></span>
+                    <span class="file-name">..</span>
                     <span class="file-type">Parent</span>
+                    <span class="file-size">-</span>
                     <span class="file-modified">-</span>
                 </li>
 '''
@@ -146,6 +147,7 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/shell/shell.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/json/json.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/htmlmixed/htmlmixed.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         html, body {{ height: 100%; overflow: hidden; }}
@@ -274,6 +276,22 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             justify-content: space-between;
         }}
         .preview-header h2 {{ font-size: 14px; color: #50fa7b; }}
+        .preview-actions {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .md-preview-btn {{
+            display: none;
+            color: #8be9fd;
+            background: #1f3460;
+            border: 1px solid #0f3460;
+            border-radius: 4px;
+            font-size: 12px;
+            padding: 4px 10px;
+            cursor: pointer;
+        }}
+        .md-preview-btn:hover {{ background: #2c4b86; color: #eaf9ff; }}
         .preview-close {{
             color: #666;
             cursor: pointer;
@@ -290,6 +308,55 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             font-size: 14px;
         }}
         .CodeMirror {{ height: 100%; font-size: 13px; }}
+        .image-preview-wrap {{
+            display: none;
+            height: 100%;
+            align-items: center;
+            justify-content: center;
+            overflow: auto;
+            padding: 20px;
+            background: #1f2230;
+        }}
+        .image-preview {{
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 6px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+        }}
+        .markdown-preview {{
+            display: none;
+            height: 100%;
+            overflow: auto;
+            padding: 22px 26px;
+            color: #e7e7ec;
+            line-height: 1.7;
+        }}
+        .markdown-preview h1, .markdown-preview h2, .markdown-preview h3 {{
+            color: #8be9fd;
+            margin: 18px 0 10px;
+        }}
+        .markdown-preview p, .markdown-preview ul, .markdown-preview ol {{ margin: 10px 0; }}
+        .markdown-preview a {{ color: #50fa7b; }}
+        .markdown-preview code {{
+            background: #1f2230;
+            padding: 2px 5px;
+            border-radius: 4px;
+            color: #ffb86c;
+        }}
+        .markdown-preview pre {{
+            background: #1f2230;
+            border: 1px solid #3b3f51;
+            border-radius: 8px;
+            padding: 12px;
+            overflow: auto;
+        }}
+        .markdown-preview blockquote {{
+            border-left: 3px solid #6272a4;
+            padding-left: 10px;
+            color: #b9bfd5;
+            margin: 10px 0;
+        }}
         
         .file-icon-img {{ color: #4caf50; }}
         .file-icon-code {{ color: #2196f3; }}
@@ -307,7 +374,6 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 <h1>📁 Workspace</h1>
                 <div class="breadcrumb">
                     <a href="/">Home</a>{breadcrumb_html}
-                    <span class="current-dir">{title}</span>
                 </div>
             </div>
         </div>
@@ -315,7 +381,6 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
         <!-- 工具栏 -->
         <div class="toolbar">
             <input type="text" id="search" class="search-input" oninput="filterFiles()" placeholder>
-            <span>排序:</span>
             {sort_links}
         </div>
         
@@ -332,12 +397,19 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
             <div class="preview" id="preview">
                 <div class="preview-header">
                     <h2 id="preview-title">Preview</h2>
-                    <span class="preview-close" onclick="closePreview()">✕</span>
+                    <div class="preview-actions">
+                        <button id="md-preview-toggle" class="md-preview-btn" type="button">预览</button>
+                        <span class="preview-close" onclick="closePreview()">✕</span>
+                    </div>
                 </div>
                 <div class="preview-content">
                     <div class="preview-empty" id="preview-empty">
                         👆 Click a file to preview
                     </div>
+                    <div class="image-preview-wrap" id="image-preview-wrap">
+                        <img id="image-preview" class="image-preview" alt="Image preview">
+                    </div>
+                    <div id="markdown-preview" class="markdown-preview"></div>
                     <textarea id="code" style="display:none;"></textarea>
                 </div>
             </div>
@@ -347,11 +419,116 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
     <script>
         // 文件预览
         let editor = null;
+        let currentImageUrl = null;
+        let currentFileExt = '';
+        let markdownPreviewMode = false;
+        
+        const mdToggleBtn = document.getElementById('md-preview-toggle');
+        const markdownPreviewEl = document.getElementById('markdown-preview');
+        
+        function getCodeMirrorWrapper() {{
+            const code = document.getElementById('code');
+            if (!code) return null;
+            const sibling = code.nextElementSibling;
+            if (sibling && sibling.classList && sibling.classList.contains('CodeMirror')) {{
+                return sibling;
+            }}
+            return null;
+        }}
+        
+        function setSourceViewVisible(visible) {{
+            const code = document.getElementById('code');
+            const wrapper = getCodeMirrorWrapper();
+            code.style.display = visible ? 'block' : 'none';
+            if (wrapper) {{
+                wrapper.style.display = visible ? 'block' : 'none';
+            }}
+            if (visible && editor) {{
+                editor.refresh();
+            }}
+        }}
+        
+        function escapeHtml(text) {{
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }}
+        
+        function renderMarkdownPreview() {{
+            const source = editor ? editor.getValue() : document.getElementById('code').value;
+            if (window.marked && typeof window.marked.parse === 'function') {{
+                markdownPreviewEl.innerHTML = window.marked.parse(source);
+            }} else {{
+                markdownPreviewEl.innerHTML = '<pre>' + escapeHtml(source) + '</pre>';
+            }}
+        }}
+        
+        function updateMdPreviewButton() {{
+            if (currentFileExt === 'md') {{
+                mdToggleBtn.style.display = 'inline-block';
+                mdToggleBtn.textContent = markdownPreviewMode ? '源码' : '预览';
+            }} else {{
+                mdToggleBtn.style.display = 'none';
+                markdownPreviewMode = false;
+            }}
+        }}
+        
+        function resetPreviewState() {{
+            document.getElementById('preview-empty').style.display = 'none';
+            document.getElementById('code').style.display = 'none';
+            document.getElementById('image-preview-wrap').style.display = 'none';
+            markdownPreviewEl.style.display = 'none';
+            markdownPreviewEl.innerHTML = '';
+            currentFileExt = '';
+            markdownPreviewMode = false;
+            updateMdPreviewButton();
+            
+            if (currentImageUrl) {{
+                URL.revokeObjectURL(currentImageUrl);
+                currentImageUrl = null;
+            }}
+            
+            if (editor) {{
+                editor.toTextArea();
+                editor = null;
+            }}
+        }}
+        
+        function navigateTo(url) {{
+            if (!url) return;
+            window.location.href = url;
+        }}
+        
+        function getParentUrlFromBreadcrumb() {{
+            const links = Array.from(document.querySelectorAll('.breadcrumb a'));
+            if (links.length <= 1) return '/';
+            // 面包屑最后一个链接是当前目录，倒数第二个即上一级
+            return links[links.length - 2].getAttribute('href') || '/';
+        }}
+        
+        mdToggleBtn.addEventListener('click', () => {{
+            if (currentFileExt !== 'md') return;
+            markdownPreviewMode = !markdownPreviewMode;
+            if (markdownPreviewMode) {{
+                renderMarkdownPreview();
+                setSourceViewVisible(false);
+                markdownPreviewEl.style.display = 'block';
+            }} else {{
+                markdownPreviewEl.style.display = 'none';
+                setSourceViewVisible(true);
+            }}
+            updateMdPreviewButton();
+        }});
         
         document.querySelectorAll('.file-item').forEach(item => {{
             item.addEventListener('click', async (e) => {{
-                // 如果点击的是链接(a标签)，让默认行为生效
-                if (e.target.tagName === 'A') return;
+                if (item.classList.contains('parent-item')) {{
+                    navigateTo(getParentUrlFromBreadcrumb());
+                    return;
+                }}
                 
                 const url = item.dataset.url;
                 if (!url) return;
@@ -359,7 +536,7 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 // 判断是目录还是文件
                 if (url.endsWith('/')) {{
                     // 目录 - 跳转
-                    window.location.href = url;
+                    navigateTo(url);
                     return;
                 }}
                 
@@ -371,17 +548,33 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                 item.classList.add('active');
                 
                 document.getElementById('preview-title').textContent = '📄 ' + name;
-                document.getElementById('preview-empty').style.display = 'none';
-                document.getElementById('code').style.display = 'block';
+                resetPreviewState();
                 
                 try {{
                     const response = await fetch(url);
-                    const text = await response.text();
+                    if (!response.ok) {{
+                        throw new Error('HTTP ' + response.status);
+                    }}
                     
+                    const contentType = (response.headers.get('content-type') || '').toLowerCase();
                     const ext = name.split('.').pop().toLowerCase();
                     const textExts = ['md', 'txt', 'py', 'js', 'ts', 'json', 'html', 'css', 'sh', 'yaml', 'yml', 'xml', 'log', 'cfg', 'conf', 'ini'];
+                    currentFileExt = ext;
+                    markdownPreviewMode = false;
+                    updateMdPreviewButton();
                     
-                    if (textExts.includes(ext)) {{
+                    if (contentType.startsWith('image/')) {{
+                        const blob = await response.blob();
+                        currentImageUrl = URL.createObjectURL(blob);
+                        document.getElementById('image-preview').src = currentImageUrl;
+                        document.getElementById('image-preview-wrap').style.display = 'flex';
+                    }} else if (
+                        textExts.includes(ext) ||
+                        contentType.startsWith('text/') ||
+                        contentType.includes('json') ||
+                        contentType.includes('xml')
+                    ) {{
+                        const text = await response.text();
                         const langMap = {{
                             'py': 'python', 'js': 'javascript', 'ts': 'typescript',
                             'json': 'json', 'html': 'htmlmixed', 'css': 'css',
@@ -390,13 +583,10 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                             'cfg': 'properties', 'conf': 'properties',
                             'log': 'text', 'txt': 'text'
                         }};
-                        
+                            
                         const mode = langMap[ext] || 'text';
                         
-                        if (editor) {{
-                            editor.toTextArea();
-                        }}
-                        
+                        setSourceViewVisible(true);
                         document.getElementById('code').value = text;
                         editor = CodeMirror.fromTextArea(document.getElementById('code'), {{
                             mode: mode,
@@ -409,7 +599,6 @@ class WorkspaceBrowserHandler(SimpleHTTPRequestHandler):
                         document.getElementById('preview-empty').innerHTML = 
                             'Preview not available<br><a href="' + url + '" style="color:#00d9ff">Download</a>';
                         document.getElementById('preview-empty').style.display = 'flex';
-                        document.getElementById('code').style.display = 'none';
                     }}
                 }} catch (err) {{
                     document.getElementById('preview-empty').textContent = 'Error: ' + err.message;
